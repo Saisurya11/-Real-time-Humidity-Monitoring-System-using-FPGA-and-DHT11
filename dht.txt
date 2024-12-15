@@ -1,0 +1,436 @@
+`timescale 1ns/1ps
+
+module dht(clk,rst,dht_11,temp,temp_decimal,hum_decimal,hum,error_bits,error,stage,stage_01,op_40);
+input clk,rst;
+inout dht_11;
+reg dht11_temp=1'bz;
+output reg [7:0]temp,hum,error_bits,temp_decimal,hum_decimal;
+output reg [2:0]stage;
+output reg stage_01,error;
+output reg op_40;
+
+reg [2:0]state=3'b000;
+parameter sensor_init_18ms=3'b000;
+reg [31:0]counter_18ms=0,counter_40ms=0;
+parameter sensor_init_40us=3'b001;
+reg [5:0]counter_40us=0;
+parameter data_low=3'b010;
+parameter data_high=3'b011;
+parameter data_in=3'b100;
+parameter data_transfer=3'b101;
+parameter data_reset=3'b110;
+
+reg [7:0]bit_70=0; //for counting high pulse
+parameter data_0=0;
+parameter data_1=1;
+reg data_01=data_0;
+
+reg [6:0]counter_40=0;
+
+reg [39:0]data_val=40'd0;
+always@(posedge clk)
+begin
+if(rst)
+begin
+hum<=0;
+temp<=0;
+error_bits<=0;
+hum_decimal<=0;
+temp_decimal<=0;
+state<=sensor_init_18ms;
+data_01<=data_0;
+counter_18ms<=0;
+counter_40us<=0;
+op_40<=0;
+counter_40<=0;
+bit_70<=0;
+counter_40ms<=0;
+data_val<=40'd0;
+end
+else
+begin
+case(state)
+sensor_init_18ms:begin
+if(counter_18ms<18000)
+begin
+counter_18ms<=counter_18ms+1;
+dht11_temp<=0;
+end
+else
+state<=sensor_init_40us;
+end
+
+sensor_init_40us:begin
+if(counter_40us<40)
+begin
+counter_40us<=counter_40us+1;
+dht11_temp<=1;
+end
+else
+state<=data_low;
+end
+
+data_low:begin
+if(dht_11==1)
+state<=data_high;
+else
+state<=data_low;
+end
+
+data_high:begin
+if(dht_11==0)
+state<=data_in;
+else
+state<=data_high;
+end
+
+data_in:begin
+if(counter_40<40)
+begin
+case(data_01)
+data_0:begin
+if(dht_11==1)
+begin
+data_01<=data_1;
+bit_70<=0;
+end
+else
+data_01<=data_0;
+end
+
+data_1:begin
+if(dht_11==1)
+bit_70<=bit_70+1;
+
+if(bit_70<30 && dht_11==0)
+begin
+bit_70<=0;
+data_val[counter_40]=1'b0;
+data_01<=data_0;
+counter_40<=counter_40+1;
+end
+else if(bit_70<80 && dht_11==0)
+begin
+bit_70<=0;
+data_01<=data_0;
+data_val[counter_40]=1'b1;
+counter_40<=counter_40+1;
+end
+end
+
+default:data_01<=data_0;
+endcase
+op_40<=0;
+end
+else if(counter_40>=40)
+begin
+op_40<=1;
+state<=data_transfer;
+end
+end
+
+data_transfer:begin
+hum<=data_val[7:0];
+temp<=data_val[23:16];
+error_bits<=data_val[39:32];
+hum_decimal<=data_val[15:8];
+temp_decimal<=data_val[31:24];
+error<=(data_val[7:0]+data_val[15:8]+data_val[23:16]+data_val[31:24]==data_val[39:32])?1'b1:1'b0;
+stage_01<=data_01;
+stage<=state;
+state<=data_reset;
+end
+
+data_reset:begin
+if(counter_40ms<900000)
+begin
+counter_40ms<=counter_40ms+1;
+end
+else
+begin
+counter_18ms<=0;
+counter_40ms<=0;
+counter_40us<=0;
+counter_40<=0;
+bit_70<=0;
+//hum<=8'd0;
+//temp<=8'd0;
+data_val<=40'd0;
+//error_bits<=8'd0;
+error<=0;
+stage<=0;
+op_40<=0;
+stage_01<=0;
+data_01<=data_0;
+state<=sensor_init_18ms;
+end
+end
+endcase
+end
+end
+assign dht_11 = (state == sensor_init_18ms || state == sensor_init_40us) ? dht11_temp : 1'bz;
+endmodule
+
+module clock_divder(clk, micro_clk, seg_clk);
+input clk;
+output reg micro_clk = 0, seg_clk = 0;
+reg [5:0] counter = 0;
+reg [31:0] counter1 = 0;
+
+always @(posedge clk) begin
+if (counter == 49) begin
+micro_clk = ~micro_clk;
+counter = 0;
+end else
+counter = counter + 1;
+end
+
+always @(posedge clk) begin
+counter1 = counter1 + 1;
+seg_clk = counter1[15];
+end
+endmodule
+
+module refresh_counter(clk, out_val);
+input clk;
+output reg [2:0] out_val = 0;
+
+always @(posedge clk) begin
+out_val = out_val + 1;
+end
+endmodule
+
+module display(clk,mux,rst,dht_11,error_bits,er_led,stage,state_01,op_40,an,seg,motor);
+input clk,rst;
+inout dht_11;
+input [1:0]mux;
+output [7:0]error_bits;
+output [2:0]stage;
+output er_led,state_01,op_40,motor;
+output reg [7:0]an=8'b11111111;
+output reg [6:0]seg=7'b1111111;
+
+wire micro_clk,seg_clk;
+clock_divder c1(clk, micro_clk, seg_clk);
+
+wire [2:0]out_val;
+refresh_counter r1(seg_clk, out_val);
+
+wire [7:0]temp,temp_decimal,hum,hum_decimal;
+dht m1(micro_clk,rst,dht_11,temp,temp_decimal,hum_decimal,hum,error_bits,er_led,stage,state_01,op_40);
+
+//dht(clk,rst,dht_11,temp,temp_decimal,hum_decimal,hum,error_bits,error,stage,stage_01,op_40);
+assign motor=(~rst && hum<80)?1'b0:1'b1;
+reg [3:0]bcd=0;
+always@(posedge clk)
+begin
+case(mux)
+2'b00:begin
+case(out_val)
+0:begin
+bcd<=temp[0];
+an<=8'b01111111;
+end
+
+1:begin
+bcd<=temp[1];
+an<=8'b10111111;
+end
+
+2:begin
+bcd<=temp[2];
+an<=8'b11011111;
+end
+
+3:begin
+bcd<=temp[3];
+an<=8'b11101111;
+end
+
+4:begin
+bcd<=temp[4];
+an<=8'b11110111;
+end
+5:begin
+bcd<=temp[5];
+an<=8'b11111011;
+end
+6:begin
+bcd<=temp[6];
+an<=8'b11111101;
+end
+7:begin
+bcd<=temp[7];
+an<=8'b11111110;
+end
+
+default:begin
+bcd<=2;
+an<=8'b11111110;
+end
+endcase
+end
+
+2'b01:begin
+case(out_val)
+0:begin
+bcd<=temp_decimal[0];
+an<=8'b01111111;
+end
+
+1:begin
+bcd<=temp_decimal[1];
+an<=8'b10111111;
+end
+
+2:begin
+bcd<=temp_decimal[2];
+an<=8'b11011111;
+end
+
+3:begin
+bcd<=temp_decimal[3];
+an<=8'b11101111;
+end
+
+4:begin
+bcd<=temp_decimal[4];
+an<=8'b11110111;
+end
+5:begin
+bcd<=temp_decimal[5];
+an<=8'b11111011;
+end
+6:begin
+bcd<=temp_decimal[6];
+an<=8'b11111101;
+end
+7:begin
+bcd<=temp_decimal[7];
+an<=8'b11111110;
+end
+
+default:begin
+bcd<=2;
+an<=8'b11111110;
+end
+endcase
+end
+
+2'b10:begin
+case(out_val)
+0:begin
+bcd<=hum[0];
+an<=8'b01111111;
+end
+
+1:begin
+bcd<=hum[1];
+an<=8'b10111111;
+end
+
+2:begin
+bcd<=hum[2];
+an<=8'b11011111;
+end
+
+3:begin
+bcd<=hum[3];
+an<=8'b11101111;
+end
+
+4:begin
+bcd<=hum[4];
+an<=8'b11110111;
+end
+5:begin
+bcd<=hum[5];
+an<=8'b11111011;
+end
+6:begin
+bcd<=hum[6];
+an<=8'b11111101;
+end
+7:begin
+bcd<=hum[7];
+an<=8'b11111110;
+end
+
+default:begin
+bcd<=2;
+an<=8'b11111110;
+end
+endcase
+end
+
+2'b11:begin
+case(out_val)
+0:begin
+bcd<=hum_decimal[0];
+an<=8'b01111111;
+end
+
+1:begin
+bcd<=hum_decimal[1];
+an<=8'b10111111;
+end
+
+2:begin
+bcd<=hum_decimal[2];
+an<=8'b11011111;
+end
+
+3:begin
+bcd<=hum_decimal[3];
+an<=8'b11101111;
+end
+
+4:begin
+bcd<=hum_decimal[4];
+an<=8'b11110111;
+end
+5:begin
+bcd<=hum_decimal[5];
+an<=8'b11111011;
+end
+6:begin
+bcd<=hum_decimal[6];
+an<=8'b11111101;
+end
+7:begin
+bcd<=hum_decimal[7];
+an<=8'b11111110;
+end
+
+default:begin
+bcd<=2;
+an<=8'b11111110;
+end
+endcase
+end
+
+default:begin
+bcd<=2;
+an<=8'b11111110;
+end
+endcase
+
+case(bcd)
+0: seg = 7'b1000000;
+1: seg = 7'b1111001;
+default:seg=7'b0111111;
+endcase
+end
+endmodule
+
+module top(clk,sw,JA,JB,led,an,seg);
+input clk;
+inout JA;
+output JB;
+input [2:0]sw;
+output [13:0]led;
+output [7:0]an;
+output [6:0]seg;
+display t1(clk,sw[2:1],sw[0],JA,led[13:6],led[0],led[3:1],led[4],led[5],an,seg,JB);
+endmodule
+//display(clk,mux,rst,dht_11,error_bits,er_led,stage,state_01,op_40,an,seg);
